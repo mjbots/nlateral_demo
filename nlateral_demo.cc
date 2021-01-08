@@ -148,7 +148,7 @@ struct Arguments {
 };
 
 void DisplayUsage() {
-  std::cout << "Usage: moteus_control_example [options]\n";
+  std::cout << "Usage: nlateral_demo [options]\n";
   std::cout << "\n";
   std::cout << "  -h, --help           display this usage message\n";
   std::cout << "  --main-cpu CPU       run main thread on a fixed CPU [default: 1]\n";
@@ -162,6 +162,10 @@ void DisplayUsage() {
   std::cout << "    bN - pi3hat bus number N (default 1)\n";
   std::cout << "    pXX.X - scale position by this positive float\n";
   std::cout << "    fXX.X - scale force by this positive float\n";
+  std::cout << "\n";
+  std::cout << "Example w/ two moteus devkit motors on ID 1 and 2:\n";
+  std::cout << "  sudo ./nlateral_demo -s 1 -s 2 --period-s 0.001 --kp 1.0 --kd 0.01\n";
+
 }
 
 void LockMemory() {
@@ -192,9 +196,8 @@ std::pair<double, double> MinMaxVoltage(
 class NLateralController {
  public:
   NLateralController(const Arguments& arguments) : arguments_(arguments) {
-    if (arguments_.servos.size() < 2) {
-      throw std::runtime_error(
-          "At least 2 servos required, (specify -s more than once)\n");
+    for (const auto& servo : arguments.servos) {
+      servos_[servo.id] = servo;
     }
   }
 
@@ -202,6 +205,11 @@ class NLateralController {
   /// set of servos that are used, along with which bus each is
   /// attached to.
   std::map<int, int> servo_bus_map() const {
+    if (arguments_.servos.size() < 2) {
+      throw std::runtime_error(
+          "At least 2 servos required, (specify -s more than once)\n");
+    }
+
     std::map<int, int> result;
     for (const auto& servo : arguments_.servos) {
       if (result.count(servo.id)) {
@@ -310,10 +318,15 @@ class NLateralController {
     // configured kp/kd constants.
     const double average_position = Average(
         status,
-        [&](const auto& s) { return s.result.position - initial_positions_.at(s.id); });
+        [&](const auto& s) {
+          return (s.result.position - initial_positions_.at(s.id)) *
+              servos_.at(s.id).position_scale;
+        });
     const double average_velocity = Average(
         status,
-        [](const auto& s) { return s.result.velocity; });
+        [&](const auto& s) {
+          return s.result.velocity * servos_.at(s.id).position_scale;
+        });
 
     if (0) {
       std::cout << "avg pos: " << average_position << "  "
@@ -322,12 +335,14 @@ class NLateralController {
 
     for (auto& cmd : *output) {
       const auto result = Get(status, cmd.id);
+      const auto& servo = servos_.at(cmd.id);
 
-      const double pos = result.position - initial_positions_.at(cmd.id);
+      const double pos = (result.position -
+                          initial_positions_.at(cmd.id)) * servo.position_scale;
       const auto p = -arguments_.kp * (pos - average_position);
       const auto d = -arguments_.kd * (result.velocity - average_velocity);
 
-      const auto unlimited_torque = p + d;
+      const auto unlimited_torque = (p + d) * servo.force_scale;
       const auto torque =
           (unlimited_torque < -arguments_.max_torque) ?
           -arguments_.max_torque :
@@ -358,6 +373,7 @@ class NLateralController {
   uint64_t cycle_count_ = 0;
   std::map<int, double> initial_positions_;
   std::map<int, double> torques_;
+  std::map<int, Servo> servos_;
   bool fault_ = false;
 };
 
