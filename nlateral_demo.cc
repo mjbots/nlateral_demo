@@ -85,30 +85,32 @@ struct Servo {
     }
     result.id = std::stol(fields[0].substr(0, id_end));
     fields[0].erase(0, id_end);
-    for (const auto& field : fields) {
-      if (field.at(0) == 'b') {
-        result.bus = std::stol(field.substr(1));
-      } else if (field.at(0) == 'p') {
-        result.position_scale = std::stod(field.substr(1));
-        if (std::isfinite(result.position_scale) &&
-            result.position_scale > 0.25 &&
-            result.position_scale < 16.0) {
-          // good
-        } else {
-          throw std::runtime_error("Position scale out of range: " + field);
-        }
-      } else if (field.at(0) == 'f') {
-        result.force_scale = std::stod(field.substr(1));
+    if (!fields[0].empty()) {
+      for (const auto& field : fields) {
+        if (field.at(0) == 'b') {
+          result.bus = std::stol(field.substr(1));
+        } else if (field.at(0) == 'p') {
+          result.position_scale = std::stod(field.substr(1));
+          if (std::isfinite(result.position_scale) &&
+              result.position_scale > 0.25 &&
+              result.position_scale < 16.0) {
+            // good
+          } else {
+            throw std::runtime_error("Position scale out of range: " + field);
+          }
+        } else if (field.at(0) == 'f') {
+          result.force_scale = std::stod(field.substr(1));
 
-        if (std::isfinite(result.force_scale) &&
-            result.force_scale > 0.25 &&
-            result.force_scale < 4.0) {
-          // good
+          if (std::isfinite(result.force_scale) &&
+              result.force_scale > 0.25 &&
+              result.force_scale < 4.0) {
+            // good
+          } else {
+            throw std::runtime_error("Force scale out of range: " + field);
+          }
         } else {
-          throw std::runtime_error("Force scale out of range: " + field);
+          throw std::runtime_error("Unknown option: " + field);
         }
-      } else {
-        throw std::runtime_error("Unknown option: " + field);
       }
     }
     return result;
