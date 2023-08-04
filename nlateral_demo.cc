@@ -79,8 +79,12 @@ struct Servo {
   static Servo Parse(const std::string& message) {
     auto fields = Split(message);
     Servo result;
-    result.id = std::atol(fields[0].c_str());
-    fields[0].erase(fields[0].begin());
+    size_t id_end = 0;
+    while (id_end < fields[0].size() && std::isdigit(fields[0][id_end])) {
+      id_end++;
+    }
+    result.id = std::stol(fields[0].substr(0, id_end));
+    fields[0].erase(0, id_end);
     for (const auto& field : fields) {
       if (field.at(0) == 'b') {
         result.bus = std::stol(field.substr(1));
