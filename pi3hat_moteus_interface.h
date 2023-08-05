@@ -16,6 +16,7 @@
 
 #include <condition_variable>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -24,6 +25,7 @@
 
 #include "pi3hat.h"
 
+#include "moteus_protocol.h"
 #include "realtime.h"
 
 namespace mjbots {
@@ -37,11 +39,6 @@ class Pi3HatMoteusInterface {
  public:
   struct Options {
     int cpu = -1;
-
-    // If a servo is not present, it is assumed to be on bus 1.
-    std::map<int, int> servo_bus_map;
-
-    bool enable_aux = true;
   };
 
   Pi3HatMoteusInterface(const Options& options)
@@ -60,6 +57,7 @@ class Pi3HatMoteusInterface {
 
   struct ServoCommand {
     int id = 0;
+    int bus = 1;
 
     moteus::Mode mode = moteus::Mode::kStopped;
 
@@ -72,6 +70,7 @@ class Pi3HatMoteusInterface {
 
   struct ServoReply {
     int id = 0;
+    int bus = 0;
     moteus::QueryResult result;
   };
 
@@ -113,9 +112,7 @@ class Pi3HatMoteusInterface {
   void CHILD_Run() {
     ConfigureRealtime(options_.cpu);
 
-    pi3hat::Pi3Hat::Configuration config;
-    config.enable_aux = options_.enable_aux;
-    pi3hat_.reset(new pi3hat::Pi3Hat(config));
+    pi3hat_.reset(new pi3hat::Pi3Hat({}));
 
     while (true) {
       {
@@ -149,15 +146,8 @@ class Pi3HatMoteusInterface {
 
       can.expect_reply = query.any_set();
       can.id = cmd.id | (can.expect_reply ? 0x8000 : 0x0000);
+      can.bus = cmd.bus;
       can.size = 0;
-
-      can.bus = [&]() {
-        const auto it = options_.servo_bus_map.find(cmd.id);
-        if (it == options_.servo_bus_map.end()) {
-          return 1;
-        }
-        return it->second;
-      }();
 
       moteus::WriteCanFrame write_frame(can.data, &can.size);
       switch (cmd.mode) {
@@ -190,6 +180,7 @@ class Pi3HatMoteusInterface {
       const auto& can = rx_can_[i];
 
       data_.replies[i].id = (can.id & 0x7f00) >> 8;
+      data_.replies[i].bus = can.bus;
       data_.replies[i].result = moteus::ParseQueryResult(can.data, can.size);
       result.query_result_size = i + 1;
     }

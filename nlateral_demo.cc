@@ -56,6 +56,8 @@ double Average(const Vector& vector, KeyGetter key_getter) {
   return total / count;
 }
 
+using ServoId = std::pair<int, int>;
+
 std::vector<std::string> Split(const std::string str) {
   std::vector<std::string> result;
 
@@ -197,30 +199,11 @@ class NLateralController {
  public:
   NLateralController(const Arguments& arguments) : arguments_(arguments) {
     for (const auto& servo : arguments.servos) {
-      servos_[servo.id] = servo;
+      servos_[ServoId(servo.id, servo.bus)] = servo;
     }
   }
 
-  /// This is called before any control begins, and must return the
-  /// set of servos that are used, along with which bus each is
-  /// attached to.
-  std::map<int, int> servo_bus_map() const {
-    if (arguments_.servos.size() < 2) {
-      throw std::runtime_error(
-          "At least 2 servos required, (specify -s more than once)\n");
-    }
-
-    std::map<int, int> result;
-    for (const auto& servo : arguments_.servos) {
-      if (result.count(servo.id)) {
-        throw std::runtime_error("servo ID present multiple times");
-      }
-      result[servo.id] = servo.bus;
-    }
-    return result;
-  }
-
-  double torque(int id) const {
+  double torque(ServoId id) const {
     const auto it = torques_.find(id);
     if (it == torques_.end()) {
       return std::numeric_limits<double>::quiet_NaN();
@@ -229,10 +212,9 @@ class NLateralController {
   }
 
   /// This is also called before any control begins.  @p commands will
-  /// be pre-populated with an entry for each servo returned by
-  /// 'servo_bus_map'.  It can be used to perform one-time
-  /// initialization like setting the resolution of commands and
-  /// queries.
+  /// be pre-populated with an entry for each servo.  It can be used
+  /// to perform one-time initialization like setting the resolution
+  /// of commands and queries.
   void Initialize(std::vector<MoteusInterface::ServoCommand>* commands) {
     moteus::PositionResolution res;
     res.position = moteus::Resolution::kIgnore;
@@ -249,9 +231,9 @@ class NLateralController {
     }
   }
 
-  moteus::QueryResult Get(const std::vector<MoteusInterface::ServoReply>& replies, int id) {
+  moteus::QueryResult Get(const std::vector<MoteusInterface::ServoReply>& replies, ServoId id) {
     for (const auto& item : replies) {
-      if (item.id == id) { return item.result; }
+      if (ServoId(item.id, item.bus) == id) { return item.result; }
     }
     return {};
   }
@@ -269,9 +251,10 @@ class NLateralController {
 
     // Capture our initial positions.
     for (const auto& status_servo : status) {
-      if (initial_positions_.count(status_servo.id) == 0 &&
+      if (initial_positions_.count(ServoId(status_servo.id, status_servo.bus)) == 0 &&
           std::isfinite(status_servo.result.position)) {
-        initial_positions_[status_servo.id] = status_servo.result.position;
+        initial_positions_[ServoId(status_servo.id, status_servo.bus)] =
+            status_servo.result.position;
       }
     }
 
@@ -305,6 +288,7 @@ class NLateralController {
       for (const auto& servo_status : status) {
         if (servo_status.result.mode == moteus::Mode::kFault) {
           std::cout << "\n\nFault!  Servo " << servo_status.id
+                    << "  bus " << servo_status.bus
                     << " reports fault " << servo_status.result.fault
                     << "\n\n";
           fault_ = true;
@@ -319,13 +303,13 @@ class NLateralController {
     const double average_position = Average(
         status,
         [&](const auto& s) {
-          return (s.result.position - initial_positions_.at(s.id)) *
-              servos_.at(s.id).position_scale;
+          return (s.result.position - initial_positions_.at(ServoId(s.id, s.bus))) *
+              servos_.at(ServoId(s.id, s.bus)).position_scale;
         });
     const double average_velocity = Average(
         status,
         [&](const auto& s) {
-          return s.result.velocity * servos_.at(s.id).position_scale;
+          return s.result.velocity * servos_.at(ServoId(s.id, s.bus)).position_scale;
         });
 
     if (0) {
@@ -334,11 +318,11 @@ class NLateralController {
     }
 
     for (auto& cmd : *output) {
-      const auto result = Get(status, cmd.id);
-      const auto& servo = servos_.at(cmd.id);
+      const auto result = Get(status, ServoId(cmd.id, cmd.bus));
+      const auto& servo = servos_.at(ServoId(cmd.id, cmd.bus));
 
       const double pos = (result.position -
-                          initial_positions_.at(cmd.id)) * servo.position_scale;
+                          initial_positions_.at(ServoId(cmd.id, cmd.bus))) * servo.position_scale;
       const auto p = -arguments_.kp * (pos - average_position);
       const auto d = -arguments_.kd * (result.velocity - average_velocity);
 
@@ -355,10 +339,10 @@ class NLateralController {
       cmd.position.kp_scale = 0.0;
       cmd.position.kd_scale = 0.0;
 
-      torques_[cmd.id] = torque;
+      torques_[ServoId(cmd.id, cmd.bus)] = torque;
 
       if (0) {
-        std::cout << cmd.id << ":" << torque << " ";
+        std::cout << cmd.id << "/" << cmd.bus << ":" << torque << " ";
       }
     }
     if (0) {
@@ -371,9 +355,9 @@ class NLateralController {
  private:
   const Arguments arguments_;
   uint64_t cycle_count_ = 0;
-  std::map<int, double> initial_positions_;
-  std::map<int, double> torques_;
-  std::map<int, Servo> servos_;
+  std::map<ServoId, double> initial_positions_;
+  std::map<ServoId, double> torques_;
+  std::map<ServoId, Servo> servos_;
   bool fault_ = false;
 };
 
@@ -387,14 +371,13 @@ void Run(const Arguments& args, Controller* controller) {
   moteus::ConfigureRealtime(args.main_cpu);
   MoteusInterface::Options moteus_options;
   moteus_options.cpu = args.can_cpu;
-  moteus_options.servo_bus_map = controller->servo_bus_map();
-  moteus_options.enable_aux = false;
   MoteusInterface moteus_interface{moteus_options};
 
   std::vector<MoteusInterface::ServoCommand> commands;
-  for (const auto& pair : moteus_options.servo_bus_map) {
+  for (const auto& servo : args.servos) {
     commands.push_back({});
-    commands.back().id = pair.first;
+    commands.back().id = servo.id;
+    commands.back().bus = servo.bus;
   }
 
   std::vector<MoteusInterface::ServoReply> replies{commands.size()};
@@ -434,9 +417,10 @@ void Run(const Arguments& args, Controller* controller) {
           result << std::fixed;
           for (const auto& item : saved_replies) {
             result << item.id << "/"
+                   << item.bus << "/"
                    << static_cast<int>(item.result.mode) << "/"
                    << item.result.position << "/"
-                   << controller->torque(item.id)
+                   << controller->torque(ServoId(item.id, item.bus))
                    << " ";
           }
           return result.str();
@@ -447,7 +431,7 @@ void Run(const Arguments& args, Controller* controller) {
                   << std::setprecision(1)
                   << "  volts: " << volts.first << "/" << volts.second
                   << "  modes: " << modes
-                  << "   \r";
+                  << "        \r";
         std::cout.flush();
         next_status += status_period;
         total_margin = 0;

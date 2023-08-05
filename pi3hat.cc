@@ -103,15 +103,39 @@ void ThrowIfErrno(bool value, const std::string& message = "") {
 
 int64_t GetNow() {
   struct timespec ts = {};
-  ::clock_gettime(CLOCK_MONOTONIC, &ts);
+  ::clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
   return static_cast<int64_t>(ts.tv_sec) * 1000000000ll +
       static_cast<int64_t>(ts.tv_nsec);
 }
 
 void BusyWaitUs(int64_t us) {
+  // We wait to ensure that setup and hold times are properly
+  // enforced.  Allowing data stores and loads to be re-ordered around
+  // the wait would defeat their purpose.  Thus, use barriers to force
+  // a complete synchronization event on either side of our waits.
+#ifdef __ARM_ARCH_ISA_A64
+  asm volatile("dsb sy");
+#elif __ARM_ARCH_7A__
+  asm volatile("dsb");
+#elif __ARM_ARCH_8A__
+  asm volatile("dsb");
+#else
+# error "Unknown architecture"
+#endif
+
   const auto start = GetNow();
   const auto end = start + us * 1000;
   while (GetNow() <= end);
+
+#ifdef __ARM_ARCH_ISA_A64
+  asm volatile("dsb sy");
+#elif __ARM_ARCH_7A__
+  asm volatile("dsb");
+#elif __ARM_ARCH_8A__
+  asm volatile("dsb");
+#else
+# error "Unknown architecture"
+#endif
 }
 
 std::string ReadContents(const std::string& filename) {
@@ -287,6 +311,12 @@ class PrimarySpi {
  public:
   struct Options {
     int speed_hz = 10000000;
+    // We actually only need hold times of around 3us.  However, the
+    // linux aarch64 kernel sometimes returns up to 8us of difference
+    // in consecutive calls to clock_gettime when in a tight busy loop
+    // (and <1 us of wall clock time has actually passed as measured
+    // by an oscilloscope).  This doesn't seem to be a problem on the
+    // armv7l kernel.
     int cs_hold_us = 3;
     int address_hold_us = 3;
 
@@ -468,6 +498,8 @@ class AuxSpi {
  public:
   struct Options {
     int speed_hz = 10000000;
+    // We actually only need hold times of around 3us, these are
+    // larger for the same reasons as in PrimarySpi.
     int cs_hold_us = 3;
     int address_hold_us = 3;
 
@@ -521,7 +553,7 @@ class AuxSpi {
         | (0 << 16) // post-input mode
         | (0 << 15) // variable CS
         | (1 << 14) // variable width
-        | (0 << 12) // DOUT hold time
+        | (2 << 12) // DOUT hold time
         | (1 << 11) // enable
         | (1 << 10) // in rising?
         | (0 << 9) // clear fifos
@@ -631,7 +663,13 @@ class AuxSpi {
       spi_->io = value;
     }
 
-    while ((spi_->stat & AUXSPI_STAT_TX_EMPTY) == 0);
+    while (true) {
+      const auto stat = spi_->stat;
+      if ((stat & AUXSPI_STAT_BUSY) == 0 &&
+          (stat & AUXSPI_STAT_TX_EMPTY) != 0) {
+        break;
+      }
+    }
 
     if (size == 0) { return; }
 
@@ -744,9 +782,9 @@ struct DeviceAttitudeData {
 } __attribute__((packed));
 
 struct DeviceImuConfiguration {
-  float yaw_deg = 0;
-  float pitch_deg = 0;
   float roll_deg = 0;
+  float pitch_deg = 0;
+  float yaw_deg = 0;
   uint32_t rate_hz = 0;
 
   bool operator==(const DeviceImuConfiguration& rhs) const {
@@ -891,6 +929,10 @@ class Pi3Hat::Impl {
     // time.
     LockFile();
 
+    if (config_.raw_spi_only) {
+      return;
+    }
+
     // Verify the versions of all peripherals we will use.
     VerifyVersions();
 
@@ -929,7 +971,7 @@ class Pi3Hat::Impl {
           sizeof(desired_imu));
 
       // Give it some time to work.
-      ::usleep(100);
+      ::usleep(1000);
       DeviceImuConfiguration config_verify;
       primary_spi_.Read(
           0, 35,
@@ -1377,6 +1419,11 @@ class Pi3Hat::Impl {
 
       // Read all we can until our buffer is full.
       for (int size : queue_sizes) {
+        if (output->rx_can_size >= rx_can->size()) {
+          // We're full and can't read any more.
+          break;
+        }
+
         if (size == 0) { continue; }
         if (size > (64 + 5)) {
           // This is malformed.  Lets just set it to the maximum size for now.

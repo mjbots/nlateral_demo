@@ -1,4 +1,4 @@
-// Copyright 2019-2020 Josh Pieper, jjp@pobox.com.
+// Copyright 2019-2021 Josh Pieper, jjp@pobox.com.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -148,7 +148,7 @@ class Pi3Hat {
     int fast_bitrate = 5000000;
     bool fdcan_frame = true;
     bool bitrate_switch = true;
-    bool automatic_retransmission = false;
+    bool automatic_retransmission = true;
     bool restricted_mode = false;
     bool bus_monitor = false;
 
@@ -174,13 +174,10 @@ class Pi3Hat {
 
     CanConfiguration can[5] = {};
 
-    Configuration() {
-      // By default the final CAN bus should be 125kbps standard frame.
-      can[4].slow_bitrate = 125000;
-      can[4].fast_bitrate = 125000;
-      can[4].fdcan_frame = false;
-      can[4].bitrate_switch = false;
-    }
+    // If true, nothing is guaranteed to work but ReadSpi.
+    bool raw_spi_only = false;
+
+    Configuration() {}
   };
 
   /// This may throw an instance of `Error` if construction fails for
@@ -210,10 +207,10 @@ class Pi3Hat {
     /// When waiting for CAN replies, guarantee to wait for at least
     /// this many nanoseconds after the final transmission is sent
     /// over SPI (not necessarily over the CAN bus).
-    uint32_t min_tx_wait_ns = 200000;
+    uint32_t min_tx_wait_ns = 250000;
 
-    /// After each succesful receipt, wait this much longer for more.
-    uint32_t rx_extra_wait_ns = 40000;
+    /// After each successful receipt, wait this much longer for more.
+    uint32_t rx_extra_wait_ns = 50000;
 
     bool request_attitude = false;
 
